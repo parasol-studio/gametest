@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PORELESS APRICOT ARTILLERY</title>
+<style>
+  :root{
+    --apricot:#F59E4C;
+    --coral:#F2766B;
+    --coral-deep:#D9534A;
+    --amber:#E8B84A;
+    --ink:#6B3A2E;
+    --skin:#F8E6D8;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#F0CDB4;overflow:hidden;touch-action:none;
+    font-family:'Courier New',monospace;-webkit-user-select:none;user-select:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #game{display:block;box-shadow:0 12px 40px rgba(107,58,46,.3);}
+  #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;text-align:center;color:var(--ink);pointer-events:none;}
+  .panel{pointer-events:auto;background:rgba(255,250,244,.96);border:3px solid var(--coral);
+    padding:28px 26px;max-width:88%;box-shadow:0 0 0 3px rgba(255,255,255,.6),0 10px 28px rgba(107,58,46,.25);}
+  .logo{display:inline-block;border:3px solid var(--coral);color:var(--coral);
+    padding:8px 18px;font-weight:bold;letter-spacing:4px;font-size:clamp(16px,4.5vw,24px);
+    clip-path:polygon(8% 0,92% 0,100% 50%,92% 100%,8% 100%,0 50%);}
+  .sub{margin-top:14px;color:var(--ink);font-size:clamp(11px,3vw,14px);
+    letter-spacing:2px;line-height:1.9;}
+  /* 포트리스 로고 패러디 */
+  .ftlogo{font-family:'Arial Black','Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+    font-size:clamp(36px,12vw,54px);font-weight:900;letter-spacing:1px;line-height:1.1;
+    margin-bottom:6px;}
+  .ftlogo span{display:inline-block;color:#F4502F;
+    text-shadow:
+      -2px 0 0 #FFF4E8, 2px 0 0 #FFF4E8, 0 -2px 0 #FFF4E8, 0 2px 0 #FFF4E8,
+      -2px -2px 0 #FFF4E8, 2px 2px 0 #FFF4E8, -2px 2px 0 #FFF4E8, 2px -2px 0 #FFF4E8,
+      4px 4px 0 #8E2B1A, 5px 5px 0 #8E2B1A, 7px 7px 8px rgba(107,58,46,.35);}
+  .ftlogo span:nth-child(odd){transform:rotate(-6deg) translateY(3px);}
+  .ftlogo span:nth-child(even){transform:rotate(5deg) translateY(-3px);}
+  .ftlogo span:nth-child(3){color:#F08A2E;}
+  .fttag{font-size:11px;letter-spacing:4px;color:#9C5B47;font-weight:bold;margin-bottom:4px;}
+  .btnrow{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:20px;}
+  button.start{background:var(--coral);color:#fff;border:none;
+    font-family:inherit;font-weight:bold;font-size:14px;letter-spacing:2px;padding:13px 22px;
+    cursor:pointer;box-shadow:0 4px 0 var(--coral-deep);}
+  button.start.alt{background:#fff;color:var(--coral);border:2px solid var(--coral);
+    box-shadow:0 4px 0 rgba(217,83,74,.35);}
+  button.start:active{transform:translateY(3px);box-shadow:0 1px 0 var(--coral-deep);}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <div id="overlay"></div>
+</div>
+
+<script>
+(()=>{
+"use strict";
+const cv=document.getElementById('game'), cx=cv.getContext('2d');
+const overlay=document.getElementById('overlay');
+let W=420,H=620,scale=1;
+function resize(){
+  scale=Math.min(window.innerWidth/W, window.innerHeight/H, 1.4);
+  cv.width=W;cv.height=H;
+  cv.style.width=(W*scale)+'px';cv.style.height=(H*scale)+'px';
+}
+window.addEventListener('resize',resize);resize();
+
+/* ---------- 사운드 ---------- */
+let AC=null;
+function beep(f,d,type='square',vol=.05){
+  try{
+    if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.type=type;o.frequency.value=f;g.gain.value=vol;
+    g.gain.exponentialRampToValueAtTime(.0001,AC.currentTime+d);
+    o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+d);
+  }catch(e){}
+}
+
+/* ---------- 상태 ---------- */
+const ST={TITLE:0,STAGEIN:1,AIM:2,FLY:3,OVER:4,CLEAR:5};
+let state=ST.TITLE, score=0, hi=0, stage=0, frame=0, stageTimer=0;
+let shots=10, wind=0, proj=null, parts=[], floats=[], drops=[];
+
+/* 브라우저별 최고 점수 (처음 접속 시 0점) */
+async function loadHi(){
+  try{
+    if(window.storage){const r=await window.storage.get('poreless-hi');
+      hi=parseInt(r&&r.value)||0;return;}
+  }catch(e){}
+  try{hi=parseInt(localStorage.getItem('poreless-hi'))||0;}catch(e){}
+}
+async function saveHi(){
+  hi=Math.max(hi,score);
+  try{
+    if(window.storage){await window.storage.set('poreless-hi',String(hi));return;}
+  }catch(e){}
+  try{localStorage.setItem('poreless-hi',String(hi));}catch(e){}
+}
+loadHi();
+
+const STAGES=[
+  {name:'볼',   en:'CHEEK',    pores:5,  windMax:.8,  ammo:9,  cap:500,  poreScale:1.0},
+  {name:'코',   en:'NOSE',     pores:8,  windMax:1.5, ammo:11, cap:1000, poreScale:.9},
+  {name:'이마', en:'FOREHEAD', pores:10, windMax:2.2, ammo:12, cap:1500, poreScale:.8},
+];
+
+/* ---------- 지형(피부 굴곡) ---------- */
+let ground=new Float32Array(W+1);
+let care=new Float32Array(W+1); // 세럼이 닿은 부위(매끈해진 정도 0~1)
+let pores=[];
+const bottle={x:52,y:0,angle:62,power:.6};
+
+function gauss(x,c,s){const d=(x-c)/s;return Math.exp(-d*d);}
+let feat={};
+function genTerrain(n){
+  const r1=Math.random()*6.28, jx=(Math.random()*30-15);
+  if(n===0){
+    /* 볼: 봉긋하고 둥근 능선 하나 */
+    const mx=265+jx;
+    feat={type:'cheek',mx};
+    for(let x=0;x<=W;x++){
+      ground[x]=H-115
+        - gauss(x,mx,125)*60          // 둥근 볼살
+        - gauss(x,110,70)*10
+        + Math.sin(x*.05+r1)*2;
+    }
+  }else if(n===1){
+    /* 코: 솟은 콧대 + 옆의 콧방울 */
+    const bridge=245+jx, wing=bridge+82;
+    feat={type:'nose',bridge,wing};
+    for(let x=0;x<=W;x++){
+      ground[x]=H-105
+        - gauss(x,bridge,46)*150      // 높고 좁은 콧대
+        - gauss(x,wing,26)*36         // 콧방울
+        - gauss(x,140,45)*12
+        + Math.sin(x*.06+r1)*1.5;
+    }
+  }else{
+    /* 이마: 넓고 완만한 돔 + 잔주름 */
+    const mx=235+jx;
+    feat={type:'forehead',mx};
+    for(let x=0;x<=W;x++){
+      ground[x]=H-125
+        - gauss(x,mx,175)*80          // 넓은 이마 돔
+        + Math.sin(x*.05+r1)*3        // 잔주름 굴곡
+        + Math.sin(x*.013+r1)*5;
+    }
+  }
+  bottle.y=ground[bottle.x|0];
+  care.fill(0);
+  /* 모공 배치: 보틀에서 떨어진 영역에 분산 */
+  pores=[];
+  const cfg=STAGES[n];
+  const ppts=Math.round(cfg.cap/cfg.pores); // 라운드 상한을 모공 수로 균등 배분
+  const x0=150, x1=W-26, gap=(x1-x0)/cfg.pores;
+  for(let i=0;i<cfg.pores;i++){
+    pores.push({
+      x:x0+gap*i+Math.random()*gap*.6,
+      r:9*cfg.poreScale, big:false, alive:true,
+      pts:ppts, wob:Math.random()*9
+    });
+  }
+}
+function groundY(x){
+  x=Math.max(0,Math.min(W,x));
+  return ground[x|0];
+}
+function rollWind(){
+  const m=STAGES[Math.min(stage,STAGES.length-1)].windMax;
+  wind=(Math.random()*2-1)*m;
+}
+
+/* ---------- 시작/스테이지 ---------- */
+function startGame(){
+  overlay.innerHTML='';
+  score=0;stage=0;
+  startStage();
+}
+function startStage(){
+  shots=STAGES[stage].ammo;proj=null;parts=[];floats=[];drops=[];
+  genTerrain(stage);rollWind();
+  state=ST.STAGEIN;stageTimer=130;
+  beep(660,.12);beep(880,.12);
+}
+
+/* ---------- 입력: 조준한 방향으로 직접 발사 ---------- */
+let aiming=false, lastTouchT=0;
+function isTouch(e){return e.type.charAt(0)==='t';}
+function pt(e){
+  const r=cv.getBoundingClientRect();
+  const t=(e.touches&&e.touches[0])||(e.changedTouches&&e.changedTouches[0])||e;
+  return [(t.clientX-r.left)/scale,(t.clientY-r.top)/scale];
+}
+/* 포인터(마우스/손가락) 위치를 향해 각도·파워 설정 */
+function aimAt(px,py){
+  const ox=bottle.x, oy=bottle.y-44;     // 포신 회전축
+  const dx=px-ox, dy=py-oy;
+  let ang=Math.atan2(-dy,dx)*180/Math.PI; // 0°=오른쪽, 90°=위, 180°=왼쪽
+  if(ang<2)ang=2; if(ang>178)ang=178;     // 화면 위쪽 반원으로 제한
+  bottle.angle=ang;
+  const dist=Math.hypot(dx,dy);
+  bottle.power=Math.max(.08,Math.min(1,(dist-28)/220)); // 멀수록 강하게
+}
+function pDown(e){
+  const t=isTouch(e);
+  if(t)lastTouchT=Date.now();
+  else if(Date.now()-lastTouchT<600)return; // 터치 후 합성 마우스 이벤트 무시
+  if(e.cancelable)e.preventDefault();
+  if(state===ST.TITLE){startGame();return;}
+  if(state!==ST.AIM)return;
+  const [px,py]=pt(e);aiming=true;aimAt(px,py);
+}
+function pMove(e){
+  if(state!==ST.AIM)return;
+  if(isTouch(e)){ if(!aiming)return; }            // 모바일: 누른 채 드래그할 때만
+  else { if(Date.now()-lastTouchT<600)return; }   // PC: 마우스 움직임만으로 조준(호버)
+  if(e.cancelable)e.preventDefault();
+  const [px,py]=pt(e);aimAt(px,py);
+}
+function pUp(e){
+  if(!isTouch(e)&&Date.now()-lastTouchT<600)return;
+  if(state!==ST.AIM)return;
+  if(aiming){aiming=false;fire();}                 // 손가락을 떼거나 클릭하면 발사
+}
+cv.addEventListener('touchstart',pDown,{passive:false});
+cv.addEventListener('touchmove',pMove,{passive:false});
+cv.addEventListener('touchend',pUp);
+cv.addEventListener('mousedown',pDown);
+addEventListener('mousemove',pMove);
+addEventListener('mouseup',pUp);
+
+const keys={};
+addEventListener('keydown',e=>{
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key))e.preventDefault();
+  keys[e.key]=true;
+  if(e.key===' '&&state===ST.TITLE)startGame();
+  else if(e.key===' '&&state===ST.AIM)fire();
+});
+addEventListener('keyup',e=>keys[e.key]=false);
+
+/* ---------- 발사 ---------- */
+function muzzle(){
+  const a=bottle.angle*Math.PI/180;
+  return [bottle.x+Math.cos(a)*34, bottle.y-44+Math.sin(-a)*0 - Math.sin(a)*0 + -Math.sin(a)*34];
+}
+function fire(){
+  if(shots<=0||proj)return;
+  shots--;
+  const a=bottle.angle*Math.PI/180, sp=4+bottle.power*9.5;
+  const [mx,my]=muzzle();
+  proj={x:mx,y:my,vx:Math.cos(a)*sp,vy:-Math.sin(a)*sp,rot:0};
+  state=ST.FLY;
+  beep(520,.1,'square',.05);beep(760,.08,'square',.03);
+}
+
+/* ---------- 폭발 ---------- */
+function explode(x,y,direct){
+  const R=36;
+  /* 피부 케어: 파이는 대신 굴곡이 정돈되고 매끈해짐 */
+  const cw=30, lo=Math.max(1,(x-cw)|0), hiX=Math.min(W-1,(x+cw)|0);
+  const yL=ground[lo], yR=ground[hiX];
+  for(let gx=lo;gx<=hiX;gx++){
+    const t=(gx-lo)/(hiX-lo);
+    const flat=yL+(yR-yL)*t;                    // 양끝을 잇는 매끈한 라인
+    const k=1-Math.abs(gx-x)/cw;                // 중심일수록 강하게
+    ground[gx]+=(flat-ground[gx])*.45*k;        // 굴곡 완화(스무딩)
+    care[gx]=Math.min(1,care[gx]+k*.9);         // 케어된 부위 표시
+  }
+  bottle.y=ground[bottle.x|0];
+  /* 모공 타격 판정 */
+  let any=false;
+  pores.forEach(p=>{
+    if(!p.alive)return;
+    const py=groundY(p.x)-p.r*.4;
+    const d=Math.hypot(p.x-x,py-y);
+    if(d<R+p.r){
+      p.alive=false;any=true;
+      score+=p.pts;
+      floatText(p.x,py-16,'+'+p.pts,'#D9534A');
+      floatText(p.x,py-32,'모공 클리어!','#6B3A2E');
+      burst(p.x,py,'#F2766B',16);burst(p.x,py,'#FFFFFF',8);
+      beep(220,.14,'sawtooth',.06);
+    }
+  });
+  /* 빗맞아도 피부는 좋아짐 */
+  if(!any){
+    floatText(x,y-22,['매끈해졌다!','쫀쫀!','탄력 UP!'][(Math.random()*3)|0],'#9C5B47');
+    beep(330,.12,'triangle',.04);
+  }
+  /* 이펙트 */
+  burst(x,y,'#F59E4C',18);burst(x,y,'#FFE3C2',12);
+  for(let i=0;i<10;i++){
+    const a2=Math.random()*Math.PI-Math.PI;
+    drops.push({x,y,vx:Math.cos(a2)*(1+Math.random()*2.5),
+      vy:-Math.random()*3-1,life:40+Math.random()*20});
+  }
+  shakeT=10;
+  proj=null;
+  rollWind();
+  /* 진행 판정 */
+  const left=pores.filter(p=>p.alive).length;
+  if(left===0){
+    score=Math.min(3000,score); // 라운드 상한 누적(총 최대 3,000)
+    stage++;
+    if(stage>=STAGES.length){state=ST.CLEAR;saveHi();setTimeout(()=>showEnd(true),600);}
+    else setTimeout(startStage,800);
+    state=stage>=STAGES.length?ST.CLEAR:state;
+  }else if(shots<=0){
+    state=ST.OVER;saveHi();setTimeout(()=>showEnd(false),700);
+  }else state=ST.AIM;
+}
+
+let shakeT=0;
+function burst(x,y,col,n){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,v=Math.random()*3+1;
+    parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:26+Math.random()*14,col});
+  }
+}
+function floatText(x,y,txt,col){floats.push({x,y,txt,col,life:55});}
+
+/* ---------- UI 패널 ---------- */
+function showTitle(){
+  overlay.innerHTML='';
+  const p=document.createElement('div');p.className='panel';
+  p.innerHTML=`<div class="ftlogo"><span>포</span><span>어</span><span>리</span><span>스</span></div>
+    <div class="fttag">PORELESS · SERUM ARTILLERY</div>
+    <div class="sub"><b style="color:var(--coral)">살구 세럼 모공 포격전</b><br><br>
+    각도와 파워, 바람을 계산해<br>살구 미사일로 모공을 케어하세요<br>
+    명중한 자리는 매끈하고 탄탄해집니다<br><br>
+    <span style="font-size:11px;opacity:.85">
+    모공 쪽을 조준하면 그 방향으로 발사!<br>
+    낙하 지점은 표시되지 않아요 — 포물선을 가늠하세요<br>
+    모바일: 누른 채 조준→떼면 발사 / PC: 조준 후 클릭<br>
+    볼→코→이마, 모공을 모두 깨야 다음 라운드로</span></div>`;
+  const row=document.createElement('div');row.className='btnrow';
+  const b=document.createElement('button');b.className='start';b.textContent='SERUM START';
+  b.onclick=startGame;row.appendChild(b);p.appendChild(row);overlay.appendChild(p);
+}
+function makeResultCard(clear){
+  const c=document.createElement('canvas');c.width=W;c.height=H;
+  const g=c.getContext('2d');
+  g.drawImage(cv,0,0);
+  const pw=330,ph=280,px=(W-pw)/2,py=(H-ph)/2;
+  g.fillStyle='rgba(255,250,244,.96)';g.fillRect(px,py,pw,ph);
+  g.strokeStyle='#F2766B';g.lineWidth=3;g.strokeRect(px,py,pw,ph);
+  g.strokeStyle='rgba(255,255,255,.6)';g.strokeRect(px-3,py-3,pw+6,ph+6);
+  const title=clear?'PORELESS!':'GAME OVER';
+  g.font='bold 24px monospace';g.textAlign='center';
+  const tw=g.measureText(title).width+44;
+  const hx=W/2-tw/2,hy=py+30,hh=42;
+  g.strokeStyle='#F2766B';g.lineWidth=3;
+  g.beginPath();
+  g.moveTo(hx+tw*.08,hy);g.lineTo(hx+tw*.92,hy);g.lineTo(hx+tw,hy+hh/2);
+  g.lineTo(hx+tw*.92,hy+hh);g.lineTo(hx+tw*.08,hy+hh);g.lineTo(hx,hy+hh/2);
+  g.closePath();g.stroke();
+  g.fillStyle='#F2766B';g.fillText(title,W/2,hy+29);
+  g.fillStyle='#6B3A2E';g.font='bold 13px monospace';
+  g.fillText(clear?'모든 모공 케어 완료! 매끈 피부 ✨':'세럼을 다 써버렸어요…',W/2,py+108);
+  g.font='bold 15px monospace';
+  g.fillText('SCORE ',W/2-30,py+158);
+  g.fillStyle='#D9534A';g.fillText(String(score),W/2+38,py+158);
+  g.fillStyle='#6B3A2E';
+  g.fillText('HIGH SCORE '+Math.max(hi,score),W/2,py+186);
+  g.fillStyle='#9C5B47';g.font='10px monospace';
+  g.fillText('PORELESS APRICOT ARTILLERY',W/2,py+234);
+  g.fillText(new Date().toLocaleDateString('ko-KR'),W/2,py+250);
+  return c;
+}
+async function shareResult(clear,btn){
+  const c=makeResultCard(clear);
+  const txt=`Poreless 살구 세럼 모공 포격전 ${clear?'올클리어!':'도전!'} SCORE ${score}`;
+  try{
+    const blob=await new Promise(r=>c.toBlob(r,'image/png'));
+    const file=new File([blob],'poreless-score.png',{type:'image/png'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file],text:txt});return;}
+    if(navigator.share){await navigator.share({text:txt});return;}
+    throw 0;
+  }catch(e){
+    try{await navigator.clipboard.writeText(txt);
+      btn.textContent='복사 완료!';setTimeout(()=>btn.textContent='결과 공유',1600);
+    }catch(e2){btn.textContent='공유 불가 환경';}
+  }
+}
+function saveResult(clear,btn){
+  try{
+    const c=makeResultCard(clear);
+    const a=document.createElement('a');
+    a.href=c.toDataURL('image/png');
+    a.download='poreless-apricot-score.png';
+    document.body.appendChild(a);a.click();a.remove();
+  }catch(e){btn.textContent='저장 불가 환경';}
+}
+function showEnd(clear){
+  overlay.innerHTML='';
+  const p=document.createElement('div');p.className='panel';
+  p.innerHTML=`<div class="logo">${clear?'PORELESS!':'GAME OVER'}</div>
+    <div class="sub">${clear?'모든 모공 케어 완료!<br>매끈 피부 달성 ✨':'세럼을 다 써버렸어요…'}<br><br>
+    SCORE <b style="color:var(--coral)">${score}</b><br>HIGH SCORE ${Math.max(hi,score)}</div>`;
+  const row=document.createElement('div');row.className='btnrow';
+  const rt=document.createElement('button');rt.className='start';rt.textContent='RETRY';
+  rt.onclick=startGame;
+  const sh=document.createElement('button');sh.className='start alt';sh.textContent='결과 공유';
+  sh.onclick=()=>shareResult(clear,sh);
+  const sv=document.createElement('button');sv.className='start alt';sv.textContent='이미지 저장';
+  sv.onclick=()=>saveResult(clear,sv);
+  row.appendChild(rt);row.appendChild(sh);row.appendChild(sv);
+  p.appendChild(row);overlay.appendChild(p);
+}
+
+/* ---------- 업데이트 ---------- */
+function update(){
+  frame++;
+  if(shakeT>0)shakeT--;
+  if(state===ST.STAGEIN){stageTimer--;if(stageTimer<=0)state=ST.AIM;}
+
+  /* 키보드 조준 */
+  if(state===ST.AIM){
+    if(keys['ArrowLeft'])bottle.angle=Math.min(170,bottle.angle+1.2);
+    if(keys['ArrowRight'])bottle.angle=Math.max(10,bottle.angle-1.2);
+    if(keys['ArrowUp'])bottle.power=Math.min(1,bottle.power+.012);
+    if(keys['ArrowDown'])bottle.power=Math.max(.1,bottle.power-.012);
+  }
+
+  /* 포탄 비행 */
+  if(proj){
+    proj.vx+=wind*.0035;
+    proj.vy+=.13;
+    proj.x+=proj.vx;proj.y+=proj.vy;
+    proj.rot+=.18;
+    if(frame%3===0)parts.push({x:proj.x,y:proj.y,vx:0,vy:0,life:14,col:'rgba(245,158,76,.5)'});
+    /* 모공 직격 */
+    let hitP=null;
+    pores.forEach(p=>{
+      if(!p.alive||hitP)return;
+      const py=groundY(p.x)-p.r*.4;
+      if(Math.hypot(p.x-proj.x,py-proj.y)<p.r+7)hitP=true;
+    });
+    if(hitP){explode(proj.x,proj.y,true);}
+    else if(proj&&proj.y>=groundY(proj.x)){explode(proj.x,groundY(proj.x),false);}
+    else if(proj&&(proj.x<-40||proj.x>W+40||proj.y>H+40)){
+      floatText(W/2,H/2,'빗나감…','#9C5B47');
+      proj=null;rollWind();
+      if(shots<=0){state=ST.OVER;saveHi();setTimeout(()=>showEnd(false),700);}
+      else state=ST.AIM;
+    }
+  }
+
+  parts.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.05;p.life--;});
+  parts=parts.filter(p=>p.life>0);
+  drops.forEach(d=>{d.x+=d.vx;d.y+=d.vy;d.vy+=.12;d.life--;
+    if(d.y>=groundY(d.x)){d.life=0;}});
+  drops=drops.filter(d=>d.life>0);
+  floats.forEach(f=>{f.y-=.7;f.life--;});
+  floats=floats.filter(f=>f.life>0);
+}
+
+/* ---------- 드로잉 ---------- */
+function drawApricot(x,y,r,rot){
+  cx.save();cx.translate(x,y);cx.rotate(rot);
+  const g=cx.createRadialGradient(-r*.3,-r*.3,r*.2,0,0,r);
+  g.addColorStop(0,'#FFC078');g.addColorStop(1,'#F08A2E');
+  cx.fillStyle=g;cx.beginPath();cx.arc(0,0,r,0,7);cx.fill();
+  cx.strokeStyle='rgba(176,90,20,.6)';cx.lineWidth=1.4;
+  cx.beginPath();cx.arc(r*.25,0,r*.9,Math.PI*.7,Math.PI*1.3);cx.stroke(); // 살구 골
+  cx.fillStyle='#6FA84B';
+  cx.beginPath();cx.ellipse(0,-r-2,3.4,1.8,-.5,0,7);cx.fill(); // 잎
+  cx.restore();
+}
+function drawBottle(){
+  const x=bottle.x,y=bottle.y;
+  cx.save();cx.translate(x,y);
+  /* 노즐(포신): 각도 표시 */
+  const a=bottle.angle*Math.PI/180;
+  cx.save();cx.translate(0,-44);cx.rotate(-a);
+  cx.fillStyle='#F2766B';cx.fillRect(0,-4,30,8);
+  cx.fillStyle='#D9534A';cx.fillRect(26,-5,7,10);
+  cx.restore();
+  /* 스프레이 캡 */
+  cx.fillStyle='rgba(242,118,107,.85)';
+  cx.fillRect(-9,-52,18,14);
+  cx.fillStyle='#E89A91';cx.fillRect(-11,-40,22,5);
+  /* 반투명 살구빛 보틀 */
+  cx.fillStyle='rgba(245,196,110,.8)';
+  cx.beginPath();
+  cx.moveTo(-13,-35);cx.lineTo(13,-35);
+  cx.quadraticCurveTo(16,-33,16,-27);cx.lineTo(16,-5);
+  cx.quadraticCurveTo(16,0,11,0);cx.lineTo(-11,0);
+  cx.quadraticCurveTo(-16,0,-16,-5);cx.lineTo(-16,-27);
+  cx.quadraticCurveTo(-16,-33,-13,-35);cx.fill();
+  cx.strokeStyle='rgba(107,58,46,.4)';cx.lineWidth=1.5;cx.stroke();
+  /* 하이라이트 + 라벨 */
+  cx.fillStyle='rgba(255,255,255,.4)';cx.fillRect(-12,-32,4,28);
+  cx.fillStyle='#fff';cx.fillRect(-9,-24,18,12);
+  cx.fillStyle='#F2766B';cx.font='bold 5px monospace';cx.textAlign='center';
+  cx.fillText('PORELESS',0,-17);
+  cx.restore();
+}
+function drawPore(p){
+  const y=groundY(p.x)-p.r*.4;
+  const w=Math.sin(frame*.05+p.wob)*1.5;
+  cx.save();cx.translate(p.x,y+w*.3);
+  cx.fillStyle='rgba(120,60,45,.25)';
+  cx.beginPath();cx.ellipse(0,p.r*.5,p.r*1.25,p.r*.5,0,0,7);cx.fill(); // 그림자
+  const g=cx.createRadialGradient(0,-2,1,0,0,p.r);
+  g.addColorStop(0,'#5A2A22');g.addColorStop(.6,'#8A4438');g.addColorStop(1,'#B97B5E');
+  cx.fillStyle=g;cx.beginPath();cx.ellipse(0,0,p.r,p.r*.82,0,0,7);cx.fill();
+  cx.fillStyle='#3A150F';cx.beginPath();cx.ellipse(0,1,p.r*.45,p.r*.36,0,0,7);cx.fill();
+  if(p.big){ // 피지 찬 대형 모공
+    cx.fillStyle='#F2C14E';cx.beginPath();cx.arc(0,1,p.r*.2,0,7);cx.fill();
+  }
+  cx.restore();
+}
+function draw(){
+  cx.save();
+  if(shakeT>0)cx.translate((Math.random()-.5)*5,(Math.random()-.5)*5);
+  /* 하늘: 복숭아빛 */
+  const sky=cx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#FFEFE0');sky.addColorStop(.5,'#FCDDC4');sky.addColorStop(1,'#F5C6A8');
+  cx.fillStyle=sky;cx.fillRect(-10,-10,W+20,H+20);
+  /* 은은한 빛무리 */
+  const sun=cx.createRadialGradient(W*.78,90,8,W*.78,90,110);
+  sun.addColorStop(0,'rgba(255,224,178,.8)');sun.addColorStop(1,'rgba(255,224,178,0)');
+  cx.fillStyle=sun;cx.fillRect(0,0,W,H);
+
+  /* 지형(피부) */
+  cx.beginPath();cx.moveTo(0,H);
+  for(let x=0;x<=W;x+=2)cx.lineTo(x,ground[x]);
+  cx.lineTo(W,H);cx.closePath();
+  const sk=cx.createLinearGradient(0,H-260,0,H);
+  sk.addColorStop(0,'#F8DCC4');sk.addColorStop(.45,'#F2C7A7');sk.addColorStop(1,'#E8B294');
+  cx.fillStyle=sk;cx.fill();
+  /* 은은한 혈색 */
+  const bl=cx.createRadialGradient(W*.55,H-60,10,W*.55,H-60,180);
+  bl.addColorStop(0,'rgba(242,150,130,.16)');bl.addColorStop(1,'rgba(242,150,130,0)');
+  cx.save();cx.clip();cx.fillStyle=bl;cx.fillRect(0,0,W,H);cx.restore();
+  /* 표면 윤곽선 */
+  cx.strokeStyle='rgba(200,130,100,.4)';cx.lineWidth=2;
+  cx.beginPath();for(let x=0;x<=W;x+=2){x===0?cx.moveTo(x,ground[x]):cx.lineTo(x,ground[x]);}cx.stroke();
+  /* 케어된 부위: 매끈한 윤기 + 밝은 톤 */
+  cx.lineCap='round';
+  for(let x=2;x<W;x+=2){
+    if(care[x]>.05){
+      cx.strokeStyle=`rgba(255,240,228,${care[x]*.75})`;
+      cx.lineWidth=4;
+      cx.beginPath();cx.moveTo(x-2,ground[x-2]-1);cx.lineTo(x,ground[x]-1);cx.stroke();
+    }
+  }
+  /* 케어 부위 반짝임 ✦ */
+  for(let x=8;x<W;x+=16){
+    if(care[x]>.3){
+      const tw=(Math.sin(frame*.08+x)+1)/2;
+      if(tw>.55){
+        const sy=ground[x]-8-(x%3)*4;
+        cx.fillStyle=`rgba(255,255,255,${(tw-.55)*1.6*care[x]})`;
+        cx.font='9px monospace';cx.textAlign='center';
+        cx.fillText('✦',x,sy);
+      }
+    }
+  }
+  /* 피부 결: 케어된 곳은 결이 사라짐 */
+  for(let i=0;i<26;i++){
+    const px=(i*73)%W;
+    const py=groundY(px)+14+(i*37)%80;
+    if(py<H&&care[px]<.4){
+      cx.fillStyle=`rgba(192,120,92,${.16*(1-care[px])})`;
+      cx.beginPath();cx.arc(px,py,1.6,0,7);cx.fill();
+    }
+  }
+
+  /* 부위별 디테일: 볼터치 / 콧방울 / 이마 주름·헤어라인 */
+  if(feat.type==='cheek'){
+    /* 발그레한 볼터치 두 개 */
+    [[feat.mx-28,42],[feat.mx+38,32]].forEach(([bx,r])=>{
+      const by=groundY(bx)+30;
+      const g=cx.createRadialGradient(bx,by,4,bx,by,r);
+      g.addColorStop(0,'rgba(244,130,110,.30)');g.addColorStop(1,'rgba(244,130,110,0)');
+      cx.fillStyle=g;cx.beginPath();cx.arc(bx,by,r,0,7);cx.fill();
+    });
+    /* 볼 하이라이트 */
+    cx.strokeStyle='rgba(255,255,255,.45)';cx.lineWidth=3;cx.lineCap='round';
+    cx.beginPath();
+    for(let x=feat.mx-55;x<=feat.mx-10;x+=4)
+      x===feat.mx-55?cx.moveTo(x,ground[x|0]-4):cx.lineTo(x,ground[x|0]-4);
+    cx.stroke();
+  }else if(feat.type==='nose'){
+    /* 콧대 옆면 음영 */
+    cx.fillStyle='rgba(180,105,80,.14)';
+    cx.beginPath();
+    for(let x=feat.bridge;x<=feat.bridge+50;x+=2)
+      x===feat.bridge?cx.moveTo(x,ground[x|0]):cx.lineTo(x,ground[x|0]);
+    cx.lineTo(feat.bridge+50,ground[feat.bridge|0]+90);
+    cx.lineTo(feat.bridge,ground[feat.bridge|0]+90);
+    cx.closePath();cx.fill();
+    /* 콧구멍 힌트 */
+    const nx=feat.wing, ny=groundY(nx)+14;
+    cx.fillStyle='rgba(90,42,34,.35)';
+    cx.beginPath();cx.ellipse(nx,ny,7,4,-.3,0,7);cx.fill();
+    /* 콧대 하이라이트 */
+    cx.strokeStyle='rgba(255,255,255,.5)';cx.lineWidth=3;cx.lineCap='round';
+    cx.beginPath();
+    for(let x=feat.bridge-26;x<=feat.bridge+4;x+=3)
+      x===feat.bridge-26?cx.moveTo(x,ground[x|0]-4):cx.lineTo(x,ground[x|0]-4);
+    cx.stroke();
+  }else if(feat.type==='forehead'){
+    /* 이마 잔주름 두 줄(표면을 따라 평행하게) */
+    [18,34].forEach((off,k)=>{
+      cx.strokeStyle=`rgba(176,100,75,${.22-k*.06})`;
+      cx.lineWidth=1.5;
+      cx.beginPath();
+      for(let x=feat.mx-105;x<=feat.mx+105;x+=4){
+        const yy=ground[Math.max(0,Math.min(W,x))|0]+off;
+        x===feat.mx-105?cx.moveTo(x,yy):cx.lineTo(x,yy);
+      }
+      cx.stroke();
+    });
+    /* 오른쪽 끝 헤어라인 */
+    cx.strokeStyle='rgba(82,48,30,.55)';cx.lineWidth=2.5;cx.lineCap='round';
+    for(let i=0;i<8;i++){
+      const hx2=W-12-i*9;
+      const hy2=groundY(hx2);
+      cx.beginPath();
+      cx.moveTo(hx2,hy2-2);
+      cx.quadraticCurveTo(hx2-6,hy2-22-i%3*5,hx2-14,hy2-34-i%4*5);
+      cx.stroke();
+    }
+  }
+
+  /* 모공 */
+  pores.forEach(p=>{if(p.alive)drawPore(p);});
+
+  /* 조준 보조: 발사 방향만 짧게 표시(낙하 지점은 예측 불가) */
+  if(state===ST.AIM){
+    const a=bottle.angle*Math.PI/180;
+    const ox=bottle.x+Math.cos(a)*34, oy=bottle.y-44-Math.sin(a)*34;
+    const len=22+bottle.power*30;
+    for(let i=1;i<=4;i++){
+      const t=i/4;
+      cx.fillStyle=`rgba(217,83,74,${.55-i*.09})`;
+      cx.beginPath();cx.arc(ox+Math.cos(a)*len*t, oy-Math.sin(a)*len*t, 2.2,0,7);cx.fill();
+    }
+  }
+
+  /* 보틀 & 포탄 */
+  drawBottle();
+  if(proj)drawApricot(proj.x,proj.y,8,proj.rot);
+
+  /* 세럼 방울 */
+  drops.forEach(d=>{
+    cx.fillStyle='rgba(245,196,110,.8)';
+    cx.beginPath();cx.arc(d.x,d.y,2.4,0,7);cx.fill();
+  });
+  /* 파티클/텍스트 */
+  parts.forEach(p=>{cx.fillStyle=p.col;cx.globalAlpha=Math.min(1,p.life/14);
+    cx.fillRect(p.x,p.y,3,3);cx.globalAlpha=1;});
+  floats.forEach(f=>{cx.globalAlpha=Math.min(1,f.life/20);cx.fillStyle=f.col;
+    cx.font='bold 12px monospace';cx.textAlign='center';cx.fillText(f.txt,f.x,f.y);cx.globalAlpha=1;});
+
+  /* ---------- HUD ---------- */
+  cx.font='bold 11px monospace';cx.textAlign='left';
+  cx.fillStyle='#D9534A';cx.fillText('SCORE',14,18);
+  cx.fillStyle='#6B3A2E';cx.fillText(String(score).padStart(5,'0'),14,32);
+  cx.fillStyle='#D9534A';cx.textAlign='center';cx.fillText('HIGH SCORE',W/2,18);
+  cx.fillStyle='#6B3A2E';cx.fillText(String(Math.max(hi,score)).padStart(5,'0'),W/2,32);
+  cx.textAlign='right';cx.fillStyle='#D9534A';
+  const cfg=STAGES[Math.min(stage,STAGES.length-1)];
+  cx.fillText('STAGE '+(Math.min(stage,STAGES.length-1)+1)+' '+cfg.name,W-14,18);
+  /* 바람 게이지 */
+  cx.textAlign='center';cx.fillStyle='#6B3A2E';cx.font='bold 10px monospace';
+  cx.fillText('WIND',W/2,50);
+  cx.strokeStyle='rgba(107,58,46,.45)';cx.lineWidth=1;
+  cx.strokeRect(W/2-52,56,104,8);
+  cx.fillStyle=wind>=0?'#F08A2E':'#6FA84B';
+  const ww=Math.abs(wind)/2.2*50;
+  if(wind>=0)cx.fillRect(W/2,57,ww,6);else cx.fillRect(W/2-ww,57,ww,6);
+  cx.fillStyle='#6B3A2E';
+  cx.fillText(wind>=0?'→':'←',W/2+(wind>=0?62:-62),64);
+  /* 남은 살구 */
+  for(let i=0;i<shots;i++){
+    drawApricot(22+i*19,H-22,6.5,0);
+  }
+  /* 각도/파워 표시 */
+  if(state===ST.AIM||aiming){
+    cx.textAlign='left';cx.font='bold 10px monospace';cx.fillStyle='#6B3A2E';
+    cx.fillText('ANGLE '+Math.round(bottle.angle)+'°',14,H-44);
+    cx.fillText('POWER',14,H-58);
+    cx.strokeStyle='rgba(107,58,46,.45)';cx.strokeRect(58,H-66,70,8);
+    cx.fillStyle='#F2766B';cx.fillRect(59,H-65,68*bottle.power,6);
+  }
+  /* 남은 모공 수 */
+  cx.textAlign='right';cx.font='bold 10px monospace';cx.fillStyle='#6B3A2E';
+  cx.fillText('남은 모공 '+pores.filter(p=>p.alive).length,W-14,H-16);
+
+  /* 스테이지 인트로 */
+  if(state===ST.STAGEIN&&stageTimer<110){
+    cx.textAlign='center';
+    cx.fillStyle='#D9534A';cx.font='bold 22px monospace';
+    cx.fillText('STAGE '+(stage+1),W/2,H/2-40);
+    cx.fillStyle='#6B3A2E';cx.font='bold 15px monospace';
+    cx.fillText(cfg.name+' 모공 지대',W/2,H/2-14);
+    cx.fillStyle='#9C5B47';cx.font='10px monospace';
+    cx.fillText(cfg.en+' · 모공 '+cfg.pores+'개 · 살구 '+cfg.ammo+'발',W/2,H/2+6);
+    if(stage>0){
+      cx.fillStyle='#D9534A';cx.font='bold 11px monospace';
+      cx.fillText('바람이 강해집니다!',W/2,H/2+30);
+    }
+  }
+  cx.restore();
+}
+
+function loop(){update();draw();requestAnimationFrame(loop);}
+genTerrain(0);showTitle();loop();
+})();
+</script>
+</body>
+</html>
